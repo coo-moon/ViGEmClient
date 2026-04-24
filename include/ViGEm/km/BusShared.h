@@ -504,3 +504,216 @@ VOID FORCEINLINE DS4_AWAIT_OUTPUT_INIT(
 }
 
 #pragma endregion
+
+#pragma region DualSense / PS5 section
+
+//
+// IO control codes for DualSense
+//
+#define IOCTL_DS5_SUBMIT_REPORT             BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x208)
+#define IOCTL_DS5_REQUEST_NOTIFICATION      BUSENUM_W_IOCTL (IOCTL_VIGEM_BASE + 0x209)
+#define IOCTL_DS5_AWAIT_OUTPUT_AVAILABLE    BUSENUM_RW_IOCTL(IOCTL_VIGEM_BASE + 0x20A)
+
+//
+// DualSense output report structure
+//
+typedef struct _DS5_OUTPUT_REPORT
+{
+    UCHAR ReportId;
+    UCHAR FeatureMaskLow;
+    UCHAR FeatureMaskHigh;
+    UCHAR RumbleLow;
+    UCHAR RumbleHigh;
+    UCHAR Reserved1[4];
+    UCHAR MicLed;
+    UCHAR Reserved2;
+    UCHAR RightTriggerMotor[11];
+    UCHAR Reserved3[6];
+    UCHAR LeftTriggerMotor[11];
+    UCHAR Reserved4[6];
+    UCHAR PlayerLeds;
+    UCHAR LightbarR;
+    UCHAR LightbarG;
+    UCHAR LightbarB;
+
+} DS5_OUTPUT_REPORT, *PDS5_OUTPUT_REPORT;
+
+//
+// DualSense request data
+//
+typedef struct _DS5_SUBMIT_REPORT
+{
+    //
+    // sizeof(struct _DS5_SUBMIT_REPORT)
+    //
+    ULONG Size;
+
+    //
+    // Serial number of target device.
+    //
+    ULONG SerialNo;
+
+    //
+    // HID Input report
+    //
+    DS5_REPORT Report;
+
+} DS5_SUBMIT_REPORT, *PDS5_SUBMIT_REPORT;
+
+//
+// Initializes a DualSense report.
+//
+VOID FORCEINLINE DS5_SUBMIT_REPORT_INIT(
+    _Out_ PDS5_SUBMIT_REPORT Report,
+    _In_ ULONG SerialNo
+)
+{
+    RtlZeroMemory(Report, sizeof(DS5_SUBMIT_REPORT));
+
+    Report->Size = sizeof(DS5_SUBMIT_REPORT);
+    Report->SerialNo = SerialNo;
+
+    DS5_REPORT_INIT(&Report->Report);
+}
+
+//
+// DualSense extended report (full 64-byte HID input)
+//
+#include <pshpack1.h>
+
+typedef struct _DS5_REPORT_EX
+{
+    union
+    {
+        struct
+        {
+            UCHAR ReportId;
+            UCHAR bThumbLX;
+            UCHAR bThumbLY;
+            UCHAR bThumbRX;
+            UCHAR bThumbRY;
+            UCHAR bTriggerL;
+            UCHAR bTriggerR;
+            UCHAR bSequence;
+            UCHAR bButtonsDPad;
+            UCHAR bButtonsA;
+            UCHAR bButtonsB;
+            UCHAR Reserved1[5];
+            SHORT wAccelX;
+            SHORT wAccelY;
+            SHORT wAccelZ;
+            SHORT wGyroX;
+            SHORT wGyroY;
+            SHORT wGyroZ;
+            UCHAR Unknown1[5];
+            UCHAR bTouchPacketsN;
+            UCHAR TouchData[12];
+            UCHAR Unknown2[12];
+            UCHAR Unknown3[8];
+            UCHAR Unknown4[8];
+        } Report;
+
+        UCHAR ReportBuffer[63];
+    };
+} DS5_REPORT_EX, *PDS5_REPORT_EX;
+
+typedef struct _DS5_SUBMIT_REPORT_EX
+{
+    _In_ ULONG Size;
+    _In_ ULONG SerialNo;
+    _In_ DS5_REPORT_EX Report;
+
+} DS5_SUBMIT_REPORT_EX, *PDS5_SUBMIT_REPORT_EX;
+
+#include <poppack.h>
+
+//
+// Initializes a DualSense extended report.
+//
+VOID FORCEINLINE DS5_SUBMIT_REPORT_EX_INIT(
+    _Out_ PDS5_SUBMIT_REPORT_EX Report,
+    _In_ ULONG SerialNo
+)
+{
+    RtlZeroMemory(Report, sizeof(DS5_SUBMIT_REPORT_EX));
+
+    Report->Size = sizeof(DS5_SUBMIT_REPORT_EX);
+    Report->SerialNo = SerialNo;
+}
+
+//
+// Data structure used in IOCTL_DS5_REQUEST_NOTIFICATION requests.
+//
+typedef struct _DS5_REQUEST_NOTIFICATION
+{
+    //
+    // sizeof(struct _DS5_REQUEST_NOTIFICATION)
+    //
+    ULONG Size;
+
+    //
+    // Serial number of target device.
+    //
+    ULONG SerialNo;
+
+    //
+    // The HID output report
+    //
+    DS5_OUTPUT_REPORT Report;
+
+} DS5_REQUEST_NOTIFICATION, *PDS5_REQUEST_NOTIFICATION;
+
+//
+// Initializes a DS5_REQUEST_NOTIFICATION structure.
+//
+VOID FORCEINLINE DS5_REQUEST_NOTIFICATION_INIT(
+    _Out_ PDS5_REQUEST_NOTIFICATION Request,
+    _In_ ULONG SerialNo
+)
+{
+    RtlZeroMemory(Request, sizeof(DS5_REQUEST_NOTIFICATION));
+
+    Request->Size = sizeof(DS5_REQUEST_NOTIFICATION);
+    Request->SerialNo = SerialNo;
+}
+
+#pragma region DS5 Await Output
+
+#include <pshpack1.h>
+
+typedef struct _DS5_AWAIT_OUTPUT
+{
+    //
+    // sizeof(struct _DS5_AWAIT_OUTPUT)
+    //
+    _In_ ULONG Size;
+
+    //
+    // Serial number of target device.
+    //
+    _Inout_ ULONG SerialNo;
+
+    //
+    // The payload
+    //
+    _Out_ DS5_OUTPUT_BUFFER Report;
+
+} DS5_AWAIT_OUTPUT, *PDS5_AWAIT_OUTPUT;
+
+#include <poppack.h>
+
+VOID FORCEINLINE DS5_AWAIT_OUTPUT_INIT(
+    _Out_ PDS5_AWAIT_OUTPUT Output,
+    _In_ ULONG SerialNo
+)
+{
+    RtlZeroMemory(Output, sizeof(DS5_AWAIT_OUTPUT));
+
+    Output->Size = sizeof(DS5_AWAIT_OUTPUT);
+    Output->SerialNo = SerialNo;
+}
+
+#pragma endregion
+
+#pragma endregion
+

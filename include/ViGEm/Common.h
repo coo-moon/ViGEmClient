@@ -1,7 +1,7 @@
 /*
 MIT License
 
-Copyright (c) 2017-2019 Nefarius Software Solutions e.U. and Contributors
+Copyright (c) 2017-2023 Nefarius Software Solutions e.U. and Contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -37,7 +37,11 @@ typedef enum _VIGEM_TARGET_TYPE
     //
     // Sony DualShock 4 (wired)
     // 
-    DualShock4Wired = 2 // NOTE: 1 skipped on purpose to maintain compatibility
+    DualShock4Wired = 2, // NOTE: 1 skipped on purpose to maintain compatibility
+    //
+    // Sony DualSense / PS5 Controller (wired)
+    //
+    DualSenseWired = 3
 
 } VIGEM_TARGET_TYPE, *PVIGEM_TARGET_TYPE;
 
@@ -88,6 +92,16 @@ VOID FORCEINLINE XUSB_REPORT_INIT(
 {
     RtlZeroMemory(Report, sizeof(XUSB_REPORT));
 }
+
+//
+// Values set by output reports on XINPUT_GAMEPAD
+//
+typedef struct _XUSB_OUTPUT_DATA
+{
+    UCHAR LargeMotor;
+    UCHAR SmallMotor;
+    UCHAR LedNumber;
+} XUSB_OUTPUT_DATA, *PXUSB_OUTPUT_DATA;
 
 //
 // The color value (RGB) of a DualShock 4 Lightbar
@@ -200,6 +214,16 @@ VOID FORCEINLINE DS4_REPORT_INIT(
     DS4_SET_DPAD(Report, DS4_BUTTON_DPAD_NONE);
 }
 
+//
+// Values set by output reports on DualShock 4
+//
+typedef struct _DS4_OUTPUT_DATA
+{
+    UCHAR LargeMotor;
+    UCHAR SmallMotor;
+    DS4_LIGHTBAR_COLOR LightbarColor;
+} DS4_OUTPUT_DATA, *PDS4_OUTPUT_DATA;
+
 #include <pshpack1.h> // pack structs tightly
 //
 // DualShock 4 HID Touchpad structure
@@ -263,3 +287,100 @@ typedef struct _DS4_OUTPUT_BUFFER
 } DS4_OUTPUT_BUFFER, *PDS4_OUTPUT_BUFFER;
 
 #include <poppack.h>
+//
+// ============================================================
+// DualSense / PS5 section
+// ============================================================
+//
+
+//
+// DualSense directional pad (HAT) values
+//
+typedef enum _DS5_DPAD_DIRECTIONS
+{
+    DS5_BUTTON_DPAD_NONE        = 0x08,
+    DS5_BUTTON_DPAD_NORTHWEST   = 0x07,
+    DS5_BUTTON_DPAD_WEST        = 0x06,
+    DS5_BUTTON_DPAD_SOUTHWEST   = 0x05,
+    DS5_BUTTON_DPAD_SOUTH       = 0x04,
+    DS5_BUTTON_DPAD_SOUTHEAST   = 0x03,
+    DS5_BUTTON_DPAD_EAST        = 0x02,
+    DS5_BUTTON_DPAD_NORTHEAST   = 0x01,
+    DS5_BUTTON_DPAD_NORTH       = 0x00
+
+} DS5_DPAD_DIRECTIONS, *PDS5_DPAD_DIRECTIONS;
+
+//
+// DualSense button flags (byte 7, bits 4-7 = face buttons)
+//
+#define DS5_BUTTON_SQUARE           (1 << 4)
+#define DS5_BUTTON_CROSS            (1 << 5)
+#define DS5_BUTTON_CIRCLE           (1 << 6)
+#define DS5_BUTTON_TRIANGLE         (1 << 7)
+
+//
+// DualSense button flags (byte 8 = buttons A)
+//
+#define DS5_BUTTON_SHOULDER_LEFT    (1 << 0)
+#define DS5_BUTTON_SHOULDER_RIGHT   (1 << 1)
+#define DS5_BUTTON_TRIGGER_LEFT     (1 << 2)
+#define DS5_BUTTON_TRIGGER_RIGHT    (1 << 3)
+#define DS5_BUTTON_CREATE           (1 << 4)
+#define DS5_BUTTON_OPTIONS          (1 << 5)
+#define DS5_BUTTON_THUMB_LEFT       (1 << 6)
+#define DS5_BUTTON_THUMB_RIGHT      (1 << 7)
+
+//
+// DualSense button flags (byte 9, bits 0-2 = buttons B)
+//
+#define DS5_BUTTON_PS               (1 << 0)
+#define DS5_BUTTON_TOUCHPAD         (1 << 1)
+#define DS5_BUTTON_MIC              (1 << 2)
+
+//
+// DualSense HID Input report (basic)
+//
+typedef struct _DS5_REPORT
+{
+    UCHAR bThumbLX;
+    UCHAR bThumbLY;
+    UCHAR bThumbRX;
+    UCHAR bThumbRY;
+    UCHAR bTriggerL;
+    UCHAR bTriggerR;
+    UCHAR bSequence;
+    UCHAR bButtonsDPad;
+    UCHAR bButtonsA;
+    UCHAR bButtonsB;
+
+} DS5_REPORT, *PDS5_REPORT;
+
+//
+// Initializes a _DS5_REPORT structure.
+//
+VOID FORCEINLINE DS5_REPORT_INIT(
+    _Out_ PDS5_REPORT Report
+)
+{
+    RtlZeroMemory(Report, sizeof(DS5_REPORT));
+
+    Report->bThumbLX = 0x80;
+    Report->bThumbLY = 0x80;
+    Report->bThumbRX = 0x80;
+    Report->bThumbRY = 0x80;
+
+    Report->bButtonsDPad = DS5_BUTTON_DPAD_NONE;
+}
+
+//
+// DualSense output report buffer
+//
+typedef struct _DS5_OUTPUT_BUFFER
+{
+    //
+    // The output report buffer
+    //
+    _Out_ UCHAR Buffer[64];
+
+} DS5_OUTPUT_BUFFER, *PDS5_OUTPUT_BUFFER;
+
