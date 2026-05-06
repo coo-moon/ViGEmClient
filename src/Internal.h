@@ -39,6 +39,8 @@ typedef struct _VIGEM_CLIENT_T
     HANDLE hBusDevice;
     HANDLE hDS4OutputReportPickupThread;
     HANDLE hDS4OutputReportPickupThreadAbortEvent;
+    HANDLE hDS5OutputReportPickupThread;
+    HANDLE hDS5OutputReportPickupThreadAbortEvent;
     PVIGEM_TARGET pTargetsList[VIGEM_TARGETS_MAX];
 } VIGEM_CLIENT;
 
@@ -70,6 +72,8 @@ typedef struct _VIGEM_TARGET_T
 	HANDLE CancelNotificationThreadEvent;
     DS4_OUTPUT_BUFFER Ds4CachedOutputReport;
     HANDLE Ds4CachedOutputReportUpdateAvailable;
+    DS5_OUTPUT_BUFFER Ds5CachedOutputReport;
+    HANDLE Ds5CachedOutputReportUpdateAvailable;
 } VIGEM_TARGET;
 
 #define DEVICE_IO_CONTROL_BEGIN	\

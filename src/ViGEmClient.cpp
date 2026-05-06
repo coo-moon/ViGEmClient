@@ -42,6 +42,7 @@ SOFTWARE.
 // STL
 // 
 #include <cstdlib>
+#include <cstdio>
 #include <climits>
 #include <thread>
 #include <functional>
@@ -185,6 +186,65 @@ static DWORD WINAPI vigem_internal_ds4_output_report_pickup_handler(LPVOID Param
 	return 0;
 }
 
+static DWORD WINAPI vigem_internal_ds5_output_report_pickup_handler(LPVOID Parameter)
+{
+	const PVIGEM_CLIENT pClient = (PVIGEM_CLIENT)Parameter;
+	DS5_AWAIT_OUTPUT await;
+	DEVICE_IO_CONTROL_BEGIN;
+
+	DBGPRINT(L"Started DS5 Output Report pickup thread for 0x%p", pClient);
+
+	do
+	{
+		DS5_AWAIT_OUTPUT_INIT(&await, 0);
+
+		DeviceIoControl(
+			pClient->hBusDevice,
+			IOCTL_DS5_AWAIT_OUTPUT_AVAILABLE,
+			&await,
+			await.Size,
+			&await,
+			await.Size,
+			&transferred,
+			&lOverlapped
+		);
+
+		if (GetOverlappedResult(pClient->hBusDevice, &lOverlapped, &transferred, TRUE) == 0)
+		{
+			const DWORD error = GetLastError();
+
+			DBGPRINT(L"Win32 Error: 0x%X", error);
+		}
+
+#if defined(VIGEM_VERBOSE_LOGGING_ENABLED)
+		DBGPRINT(L"Dumping DS5 buffer for %d", await.SerialNo);
+
+		const PCHAR dumpBuffer = (PCHAR)calloc(sizeof(DS5_OUTPUT_BUFFER), 3);
+		to_hex(await.Report.Buffer, sizeof(DS5_OUTPUT_BUFFER), dumpBuffer, sizeof(DS5_OUTPUT_BUFFER) * 3);
+		OutputDebugStringA(dumpBuffer);
+#endif
+
+		const PVIGEM_TARGET pTarget = pClient->pTargetsList[await.SerialNo];
+
+		if (pTarget)
+		{
+			memcpy(&pTarget->Ds5CachedOutputReport, &await.Report, sizeof(DS5_OUTPUT_BUFFER));
+			SetEvent(pTarget->Ds5CachedOutputReportUpdateAvailable);
+		}
+		else
+		{
+			DBGPRINT(L"No DS5 target to report to for serial %d", await.SerialNo);
+		}
+
+	} while (WaitForSingleObjectEx(pClient->hDS5OutputReportPickupThreadAbortEvent, 0, FALSE) == WAIT_TIMEOUT);
+
+	DEVICE_IO_CONTROL_END;
+
+	DBGPRINT(L"Finished DS5 Output Report pickup thread for 0x%p", pClient);
+
+	return 0;
+}
+
 PVIGEM_CLIENT vigem_alloc()
 {
 	const auto driver = static_cast<PVIGEM_CLIENT>(malloc(sizeof(VIGEM_CLIENT)));
@@ -195,6 +255,7 @@ PVIGEM_CLIENT vigem_alloc()
 	RtlZeroMemory(driver, sizeof(VIGEM_CLIENT));
 	driver->hBusDevice = INVALID_HANDLE_VALUE;
 	driver->hDS4OutputReportPickupThreadAbortEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+	driver->hDS5OutputReportPickupThreadAbortEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 
 	return driver;
 }
@@ -310,6 +371,15 @@ VIGEM_ERROR vigem_connect(PVIGEM_CLIENT vigem)
 				NULL
 			);
 
+			vigem->hDS5OutputReportPickupThread = CreateThread(
+				NULL,
+				0,
+				vigem_internal_ds5_output_report_pickup_handler,
+				vigem,
+				0,
+				NULL
+			);
+
 			error = VIGEM_ERROR_NONE;
 			free(detailDataBuffer);
 			CloseHandle(lOverlapped.hEvent);
@@ -340,6 +410,16 @@ void vigem_disconnect(PVIGEM_CLIENT vigem)
 		WaitForSingleObject(vigem->hDS4OutputReportPickupThread, INFINITE);
 		CloseHandle(vigem->hDS4OutputReportPickupThread);
 		CloseHandle(vigem->hDS4OutputReportPickupThreadAbortEvent);
+	}
+
+	if (vigem->hDS5OutputReportPickupThread && vigem->hDS5OutputReportPickupThreadAbortEvent)
+	{
+		DBGPRINT(L"Awaiting DS5 thread clean-up for 0x%p", vigem);
+
+		SetEvent(vigem->hDS5OutputReportPickupThreadAbortEvent);
+		WaitForSingleObject(vigem->hDS5OutputReportPickupThread, INFINITE);
+		CloseHandle(vigem->hDS5OutputReportPickupThread);
+		CloseHandle(vigem->hDS5OutputReportPickupThreadAbortEvent);
 	}
 
 	if (vigem->hBusDevice != INVALID_HANDLE_VALUE)
@@ -389,6 +469,20 @@ PVIGEM_TARGET vigem_target_ds4_alloc(void)
 	target->VendorId = 0x054C;
 	target->ProductId = 0x05C4;
 	target->Ds4CachedOutputReportUpdateAvailable = CreateEvent(NULL, FALSE, FALSE, NULL);
+
+	return target;
+}
+
+PVIGEM_TARGET vigem_target_ds5_alloc(void)
+{
+	const auto target = VIGEM_TARGET_ALLOC_INIT(DualSenseWired);
+
+	if (!target)
+		return nullptr;
+
+	target->VendorId = 0x054C;
+	target->ProductId = 0x0CE6;
+	target->Ds5CachedOutputReportUpdateAvailable = CreateEvent(NULL, FALSE, FALSE, NULL);
 
 	return target;
 }
@@ -477,7 +571,7 @@ VIGEM_ERROR vigem_target_add(PVIGEM_CLIENT vigem, PVIGEM_TARGET target)
 
 			//
 			// This should return fairly immediately >=v1.17
-			// 
+			//
 			if (GetOverlappedResult(vigem->hBusDevice, &olPlugIn, &transferred, TRUE) != 0)
 			{
 				/*
@@ -523,10 +617,23 @@ VIGEM_ERROR vigem_target_add(PVIGEM_CLIENT vigem, PVIGEM_TARGET target)
 				}
 
 				//
-				// Don't leave device connected if the wait call failed
-				// 
-				error = vigem_target_remove(vigem, target);
+				//
+				// Wait-for-ready failed - treat as connected anyway.
+				// The PDO was created; boot notification timeout is non-fatal.
+				//
+				target->State = VIGEM_TARGET_CONNECTED;
+				target->IsWaitReadyUnsupported = true;
+				error = VIGEM_ERROR_NONE;
 				break;
+			}
+			else
+			{
+				// DEBUG: Print why plugin IOCTL failed
+				DWORD lastErr = GetLastError();
+				char buf[256];
+				sprintf_s(buf, "DEBUG: Plugin IOCTL failed for serial %lu, type %d, Win32 error: %lu\n",
+					target->SerialNo, target->Type, lastErr);
+				OutputDebugStringA(buf);
 			}
 		}
 	} while (false);
@@ -618,6 +725,11 @@ VIGEM_ERROR vigem_target_remove(PVIGEM_CLIENT vigem, PVIGEM_TARGET target)
 		if (target->Ds4CachedOutputReportUpdateAvailable)
 		{
 			CloseHandle(target->Ds4CachedOutputReportUpdateAvailable);
+		}
+
+		if (target->Ds5CachedOutputReportUpdateAvailable)
+		{
+			CloseHandle(target->Ds5CachedOutputReportUpdateAvailable);
 		}
 
 		vigem->pTargetsList[target->SerialNo] = NULL;
@@ -1012,6 +1124,108 @@ VIGEM_ERROR vigem_target_ds4_update_ex(PVIGEM_CLIENT vigem, PVIGEM_TARGET target
 	return VIGEM_ERROR_NONE;
 }
 
+VIGEM_ERROR vigem_target_ds5_update(
+	PVIGEM_CLIENT vigem,
+	PVIGEM_TARGET target,
+	DS5_REPORT report
+)
+{
+	if (!vigem)
+		return VIGEM_ERROR_BUS_INVALID_HANDLE;
+
+	if (!target)
+		return VIGEM_ERROR_INVALID_TARGET;
+
+	if (vigem->hBusDevice == INVALID_HANDLE_VALUE)
+		return VIGEM_ERROR_BUS_NOT_FOUND;
+
+	if (target->SerialNo == 0)
+		return VIGEM_ERROR_INVALID_TARGET;
+
+	DEVICE_IO_CONTROL_BEGIN;
+
+	DS5_SUBMIT_REPORT dsr;
+	DS5_SUBMIT_REPORT_INIT(&dsr, target->SerialNo);
+
+	dsr.Report = report;
+
+	DeviceIoControl(
+		vigem->hBusDevice,
+		IOCTL_DS5_SUBMIT_REPORT,
+		&dsr,
+		dsr.Size,
+		nullptr,
+		0,
+		&transferred,
+		&lOverlapped
+	);
+
+	if (GetOverlappedResult(vigem->hBusDevice, &lOverlapped, &transferred, TRUE) == 0)
+	{
+		if (GetLastError() == ERROR_ACCESS_DENIED)
+		{
+			DEVICE_IO_CONTROL_END;
+			return VIGEM_ERROR_INVALID_TARGET;
+		}
+	}
+
+	DEVICE_IO_CONTROL_END;
+
+	return VIGEM_ERROR_NONE;
+}
+
+VIGEM_ERROR vigem_target_ds5_update_ex(PVIGEM_CLIENT vigem, PVIGEM_TARGET target, DS5_REPORT_EX report)
+{
+	if (!vigem)
+		return VIGEM_ERROR_BUS_INVALID_HANDLE;
+
+	if (!target)
+		return VIGEM_ERROR_INVALID_TARGET;
+
+	if (vigem->hBusDevice == INVALID_HANDLE_VALUE)
+		return VIGEM_ERROR_BUS_NOT_FOUND;
+
+	if (target->SerialNo == 0)
+		return VIGEM_ERROR_INVALID_TARGET;
+
+	DEVICE_IO_CONTROL_BEGIN;
+
+	DS5_SUBMIT_REPORT_EX dsr;
+	DS5_SUBMIT_REPORT_EX_INIT(&dsr, target->SerialNo);
+
+	dsr.Report = report;
+
+	DeviceIoControl(
+		vigem->hBusDevice,
+		IOCTL_DS5_SUBMIT_REPORT, // Same IOCTL, different size
+		&dsr,
+		dsr.Size,
+		nullptr,
+		0,
+		&transferred,
+		&lOverlapped
+	);
+
+	if (GetOverlappedResult(vigem->hBusDevice, &lOverlapped, &transferred, TRUE) == 0)
+	{
+		if (GetLastError() == ERROR_ACCESS_DENIED)
+		{
+			DEVICE_IO_CONTROL_END;
+			return VIGEM_ERROR_INVALID_TARGET;
+		}
+
+		if (GetLastError() == ERROR_INVALID_PARAMETER)
+		{
+			DEVICE_IO_CONTROL_END;
+			return VIGEM_ERROR_NOT_SUPPORTED;
+		}
+	}
+
+	DEVICE_IO_CONTROL_END;
+
+	return VIGEM_ERROR_NONE;
+}
+
 ULONG vigem_target_get_index(PVIGEM_TARGET target)
 {
 	return target->SerialNo;
@@ -1135,6 +1349,151 @@ VIGEM_ERROR vigem_target_ds4_await_output_report_timeout(
 #endif
 
 	RtlCopyMemory(buffer, &target->Ds4CachedOutputReport, sizeof(DS4_OUTPUT_BUFFER));
+
+	return VIGEM_ERROR_NONE;
+}
+
+VIGEM_ERROR vigem_target_ds5_register_notification(
+	PVIGEM_CLIENT vigem,
+	PVIGEM_TARGET target,
+	PFN_VIGEM_DS5_NOTIFICATION notification,
+	LPVOID userData
+)
+{
+	if (!vigem)
+		return VIGEM_ERROR_BUS_INVALID_HANDLE;
+
+	if (!target)
+		return VIGEM_ERROR_INVALID_TARGET;
+
+	if (vigem->hBusDevice == INVALID_HANDLE_VALUE)
+		return VIGEM_ERROR_BUS_NOT_FOUND;
+
+	if (target->SerialNo == 0 || notification == nullptr)
+		return VIGEM_ERROR_INVALID_TARGET;
+
+	if (target->Notification == reinterpret_cast<FARPROC>(notification))
+		return VIGEM_ERROR_CALLBACK_ALREADY_REGISTERED;
+
+	target->Notification = reinterpret_cast<FARPROC>(notification);
+	target->NotificationUserData = userData;
+
+	if (target->CancelNotificationThreadEvent == 0)
+		target->CancelNotificationThreadEvent = CreateEvent(
+			nullptr,
+			TRUE,
+			FALSE,
+			nullptr
+		);
+	else
+		ResetEvent(target->CancelNotificationThreadEvent);
+
+	std::thread _async{
+		[](
+		PVIGEM_TARGET _Target,
+		PVIGEM_CLIENT _Client,
+		LPVOID _UserData)
+		{
+			DEVICE_IO_CONTROL_BEGIN;
+
+			DS5_REQUEST_NOTIFICATION ds5rn;
+			DS5_REQUEST_NOTIFICATION_INIT(&ds5rn, _Target->SerialNo);
+
+			do
+			{
+				DeviceIoControl(
+					_Client->hBusDevice,
+					IOCTL_DS5_REQUEST_NOTIFICATION,
+					&ds5rn,
+					ds5rn.Size,
+					&ds5rn,
+					ds5rn.Size,
+					&transferred,
+					&lOverlapped
+				);
+
+				if (GetOverlappedResult(_Client->hBusDevice, &lOverlapped, &transferred, TRUE) != 0)
+				{
+					if (_Target->Notification == nullptr)
+					{
+						DEVICE_IO_CONTROL_END;
+						return;
+					}
+
+					reinterpret_cast<PFN_VIGEM_DS5_NOTIFICATION>(_Target->Notification)(
+						_Client, _Target, ds5rn.Report, _UserData
+					);
+
+					continue;
+				}
+
+				if (GetLastError() == ERROR_ACCESS_DENIED || GetLastError() == ERROR_OPERATION_ABORTED)
+				{
+					DEVICE_IO_CONTROL_END;
+					return;
+				}
+			} while (TRUE);
+		},
+		target, vigem, userData
+	};
+
+	_async.detach();
+
+	return VIGEM_ERROR_NONE;
+}
+
+void vigem_target_ds5_unregister_notification(PVIGEM_TARGET target)
+{
+	vigem_target_x360_unregister_notification(target); // Same x360_unregister handler works for DS5 also
+}
+
+VIGEM_ERROR vigem_target_ds5_await_output_report(
+	PVIGEM_CLIENT vigem,
+	PVIGEM_TARGET target,
+	PDS5_OUTPUT_BUFFER buffer
+)
+{
+	return vigem_target_ds5_await_output_report_timeout(vigem, target, INFINITE, buffer);
+}
+
+VIGEM_ERROR vigem_target_ds5_await_output_report_timeout(
+	PVIGEM_CLIENT vigem,
+	PVIGEM_TARGET target,
+	DWORD milliseconds,
+	PDS5_OUTPUT_BUFFER buffer
+)
+{
+	if (!vigem)
+		return VIGEM_ERROR_BUS_INVALID_HANDLE;
+
+	if (!target)
+		return VIGEM_ERROR_INVALID_TARGET;
+
+	if (vigem->hBusDevice == INVALID_HANDLE_VALUE)
+		return VIGEM_ERROR_BUS_NOT_FOUND;
+
+	if (target->SerialNo == 0)
+		return VIGEM_ERROR_INVALID_TARGET;
+
+	if (!buffer)
+		return VIGEM_ERROR_INVALID_PARAMETER;
+
+	const DWORD status = WaitForSingleObject(target->Ds5CachedOutputReportUpdateAvailable, milliseconds);
+
+	if (status == WAIT_TIMEOUT)
+	{
+		return VIGEM_ERROR_TIMED_OUT;
+	}
+
+#if defined(VIGEM_VERBOSE_LOGGING_ENABLED)
+	DBGPRINT(L"Dumping DS5 buffer for %d", target->SerialNo);
+
+	const PCHAR dumpBuffer = (PCHAR)calloc(sizeof(DS5_OUTPUT_BUFFER), 3);
+	to_hex(target->Ds5CachedOutputReport.Buffer, sizeof(DS5_OUTPUT_BUFFER), dumpBuffer, sizeof(DS5_OUTPUT_BUFFER) * 3);
+	OutputDebugStringA(dumpBuffer);
+#endif
+
+	RtlCopyMemory(buffer, &target->Ds5CachedOutputReport, sizeof(DS5_OUTPUT_BUFFER));
 
 	return VIGEM_ERROR_NONE;
 }

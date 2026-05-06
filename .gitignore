@@ -69,3 +69,14 @@ out/*
 /app/Tester/Release/vcpkg.applocal.log
 /app/Tester/x64/Release/Tester.Build.CppClean.log
 /app/Tester/x64/Release
+
+# DS5 Bridge build artifacts
+Ds5Bridge/*.exe
+Ds5Bridge/*.obj
+Ds5Bridge/*.lib
+Ds5Bridge/*.exp
+Ds5Bridge/*.pdb
+Ds5Bridge/*.ilk
+Ds5Bridge/build/
+Ds5Bridge/*.txt
+test/
